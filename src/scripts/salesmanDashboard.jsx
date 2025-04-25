@@ -4,7 +4,7 @@ import '../styles/salesmanDashboard.css';
 
 // Google Sheets URL for sales data
 const SALES_DATA_SHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS4g4GWB2Je79PFouIJycDPOFn47CjIrN4yqT9IJZ2hJWdhLR-mzO25u3bn6qh0PcVG5UJLfAB411UI/pub?output=csv';
-const SALES_ACHIEVEMENT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS4g4GWB2Je79PFouIJycDPOFn47CjIrN4yqT9IJZ2hJWdhLR-mzO25u3bn6qh0PcVG5UJLfAB411UI/pub?gid=1&output=csv';
+// Removed the achievement URL as it's causing a 400 error
 
 // Sample data - Will be replaced with API data when available
 const SAMPLE_DATA = {
@@ -51,6 +51,8 @@ const SalesmanDashboard = () => {
   const [filterProject, setFilterProject] = useState('all');
   const [viewingLead, setViewingLead] = useState(null);
   const [showLeadDetail, setShowLeadDetail] = useState(false);
+  // Add chart references to track and destroy instances
+  const [chartInstances, setChartInstances] = useState({});
 
   // Format currency
   const formatCurrency = (amount) => {
@@ -75,20 +77,9 @@ const SalesmanDashboard = () => {
           throw new Error(`Failed to fetch sales data: ${salesResponse.status}`);
         }
         
-        // Fetch from achievements sheet (second sheet)
-        const achievementsResponse = await fetch(SALES_ACHIEVEMENT_SHEET_URL);
-        
-        if (!achievementsResponse.ok) {
-          throw new Error(`Failed to fetch achievements data: ${achievementsResponse.status}`);
-        }
-        
         // Process sales data
         const salesCsv = await salesResponse.text();
         const salesRows = salesCsv.trim().split('\n').map(row => row.split(','));
-        
-        // Process achievements data
-        const achievementsCsv = await achievementsResponse.text();
-        const achievementsRows = achievementsCsv.trim().split('\n').map(row => row.split(','));
         
         // Find headers
         const salesHeaderIndex = salesRows.findIndex(row => 
@@ -99,24 +90,13 @@ const SalesmanDashboard = () => {
           ))
         );
         
-        const achievementsHeaderIndex = achievementsRows.findIndex(row => 
-          row.some(cell => cell && (
-            cell.includes('Salesman') || 
-            cell.includes('Target') || 
-            cell.includes('Achievement')
-          ))
-        );
-        
-        if (salesHeaderIndex === -1 || achievementsHeaderIndex === -1) {
+        if (salesHeaderIndex === -1) {
           throw new Error('Failed to find headers in the CSV data');
         }
         
         // Extract headers and data
         const salesHeaders = salesRows[salesHeaderIndex].map(h => h?.trim() || '');
         const salesData = salesRows.slice(salesHeaderIndex + 1);
-        
-        const achievementsHeaders = achievementsRows[achievementsHeaderIndex].map(h => h?.trim() || '');
-        const achievementsData = achievementsRows.slice(achievementsHeaderIndex + 1);
         
         // Map column indexes
         const salesMap = {
@@ -127,14 +107,6 @@ const SalesmanDashboard = () => {
           value: salesHeaders.findIndex(h => h.includes('Value') || h.includes('Amount')),
           date: salesHeaders.findIndex(h => h.includes('Date')),
           phone: salesHeaders.findIndex(h => h.includes('Phone') || h.includes('Contact'))
-        };
-        
-        const achievementsMap = {
-          salesman: achievementsHeaders.findIndex(h => h.includes('Salesman')),
-          target: achievementsHeaders.findIndex(h => h.includes('Target')),
-          achievement: achievementsHeaders.findIndex(h => h.includes('Achievement')),
-          month: achievementsHeaders.findIndex(h => h.includes('Month')),
-          project: achievementsHeaders.findIndex(h => h.includes('Project'))
         };
         
         // Process sales data
@@ -151,19 +123,7 @@ const SalesmanDashboard = () => {
             phone: row[salesMap.phone]?.trim() || '-'
           }));
         
-        // Process achievements data
-        const achievements = achievementsData
-          .filter(row => row.length > Math.max(...Object.values(achievementsMap)))
-          .map((row, index) => ({
-            id: index + 1,
-            salesman: row[achievementsMap.salesman]?.trim() || 'Unknown',
-            target: parseFloat(row[achievementsMap.target]?.replace(/[^0-9.-]+/g, '') || '0'),
-            achievement: parseFloat(row[achievementsMap.achievement]?.replace(/[^0-9.-]+/g, '') || '0'),
-            month: row[achievementsMap.month]?.trim() || 'Current',
-            project: row[achievementsMap.project]?.trim() || 'All Projects'
-          }));
-        
-        // Calculate summary metrics from the real data
+        // Since we can't fetch achievements data, use a default target
         const currentMonth = new Date().toLocaleString('default', { month: 'long' });
         const currentYear = new Date().getFullYear();
         
@@ -181,16 +141,8 @@ const SalesmanDashboard = () => {
         
         const revenueThisMonth = thisMonthDeals.reduce((sum, deal) => sum + deal.value, 0);
         
-        // Calculate achievement vs target
-        const currentTargets = achievements.filter(a => 
-          a.month.toLowerCase().includes(currentMonth.toLowerCase()) || 
-          a.month.includes(currentYear.toString())
-        );
-        
-        let targetThisMonth = 120000000; // Default fallback
-        if (currentTargets.length > 0) {
-          targetThisMonth = currentTargets.reduce((sum, target) => sum + target.target, 0);
-        }
+        // Use default target since we can't fetch achievements
+        const targetThisMonth = 120000000; // Default target
         
         // Calculate project-specific metrics
         const projectNames = [...new Set(deals.map(deal => deal.project))];
@@ -245,13 +197,27 @@ const SalesmanDashboard = () => {
     if (!loading && !error) {
       initializeCharts();
     }
+    
+    // Cleanup function to destroy charts when component unmounts
+    return () => {
+      Object.values(chartInstances).forEach(chart => {
+        if (chart) chart.destroy();
+      });
+    };
   }, [loading, error, data]);
 
   const initializeCharts = () => {
+    // Destroy existing chart instances before creating new ones
+    Object.values(chartInstances).forEach(chart => {
+      if (chart) chart.destroy();
+    });
+    
+    const newChartInstances = {};
+    
     // Deal Status Chart
     const dealStatusCtx = document.getElementById('dealStatusChart')?.getContext('2d');
     if (dealStatusCtx) {
-      new Chart(dealStatusCtx, {
+      newChartInstances.dealStatus = new Chart(dealStatusCtx, {
         type: 'pie',
         data: {
           labels: ['Completed', 'In Progress', 'New', 'Negotiation', 'Lost'],
@@ -284,7 +250,7 @@ const SalesmanDashboard = () => {
     // Revenue by Project Chart
     const revenueByProjectCtx = document.getElementById('revenueByProjectChart')?.getContext('2d');
     if (revenueByProjectCtx) {
-      new Chart(revenueByProjectCtx, {
+      newChartInstances.revenueByProject = new Chart(revenueByProjectCtx, {
         type: 'bar',
         data: {
           labels: Object.keys(data.summary.revenueByProject),
@@ -314,7 +280,7 @@ const SalesmanDashboard = () => {
     // Monthly Performance Chart
     const monthlyPerformanceCtx = document.getElementById('monthlyPerformanceChart')?.getContext('2d');
     if (monthlyPerformanceCtx) {
-      new Chart(monthlyPerformanceCtx, {
+      newChartInstances.monthlyPerformance = new Chart(monthlyPerformanceCtx, {
         type: 'line',
         data: {
           labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
@@ -341,6 +307,9 @@ const SalesmanDashboard = () => {
         }
       });
     }
+    
+    // Update chart instances
+    setChartInstances(newChartInstances);
   };
 
   const refreshData = () => {
@@ -349,7 +318,6 @@ const SalesmanDashboard = () => {
     setTimeout(() => {
       setData(SAMPLE_DATA);
       setLoading(false);
-      initializeCharts();
     }, 1000);
   };
 
